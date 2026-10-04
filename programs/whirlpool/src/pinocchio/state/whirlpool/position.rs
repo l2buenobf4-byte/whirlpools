@@ -222,3 +222,126 @@ fn validate_tick_range_for_whirlpool(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod reset_position_range_tests {
+    use super::*;
+    use crate::pinocchio::test_utils::*;
+    use crate::state::{MAX_TICK_INDEX, MIN_TICK_INDEX};
+
+    fn whirlpool(tick_spacing: u16) -> MemoryMapped<MemoryMappedWhirlpool> {
+        memory_mapped_whirlpool(&crate::state::Whirlpool {
+            tick_spacing,
+            ..Default::default()
+        })
+    }
+
+    fn position(
+        liquidity: u128,
+        fee_owed_a: u64,
+        reward_owed: u64,
+    ) -> MemoryMapped<MemoryMappedPosition> {
+        let mut position = crate::state::Position {
+            liquidity,
+            tick_lower_index: -64,
+            tick_upper_index: 64,
+            fee_owed_a,
+            ..Default::default()
+        };
+        position.reward_infos[2].amount_owed = reward_owed;
+        memory_mapped_position(&position)
+    }
+
+    fn reset_error(
+        position: &mut MemoryMapped<MemoryMappedPosition>,
+        whirlpool: &MemoryMapped<MemoryMappedWhirlpool>,
+        lower: i32,
+        upper: i32,
+        keep_owed: bool,
+    ) -> u64 {
+        let result =
+            position
+                .get_mut()
+                .reset_position_range(whirlpool.get(), lower, upper, keep_owed);
+        expect_err_code(result)
+    }
+
+    #[test]
+    fn keep_owed_only_requires_zero_liquidity() {
+        let whirlpool = whirlpool(64);
+        let mut owed = position(0, 5, 7);
+        expect_ok(
+            owed.get_mut()
+                .reset_position_range(whirlpool.get(), 0, 128, true),
+        );
+        assert_eq!(owed.get().fee_owed_a(), 5);
+        assert_eq!(owed.get().reward_infos()[2].amount_owed(), 7);
+
+        let mut with_liquidity = position(1, 0, 0);
+        assert_eq!(
+            reset_error(&mut with_liquidity, &whirlpool, 0, 128, true),
+            whirlpool_error_code(ErrorCode::ClosePositionNotEmpty)
+        );
+    }
+
+    #[test]
+    fn without_keep_owed_owed_amounts_block_reset() {
+        let whirlpool = whirlpool(64);
+        for mut p in [position(0, 1, 0), position(0, 0, 1), position(1, 0, 0)] {
+            assert_eq!(
+                reset_error(&mut p, &whirlpool, 0, 128, false),
+                whirlpool_error_code(ErrorCode::ClosePositionNotEmpty)
+            );
+        }
+        expect_ok(
+            position(0, 0, 0)
+                .get_mut()
+                .reset_position_range(whirlpool.get(), 0, 128, false),
+        );
+    }
+
+    #[test]
+    fn rejects_same_and_invalid_ranges() {
+        let whirlpool = whirlpool(64);
+        let mut p = position(0, 0, 0);
+        assert_eq!(
+            reset_error(&mut p, &whirlpool, -64, 64, true),
+            whirlpool_error_code(ErrorCode::SameTickRangeNotAllowed)
+        );
+        let max_usable = MAX_TICK_INDEX / 64 * 64;
+        let min_usable = MIN_TICK_INDEX / 64 * 64;
+        for (lower, upper) in [
+            (0, 0),               // empty range
+            (128, 0),             // inverted
+            (1, 128),             // not a multiple of tick spacing
+            (0, 127),             // not a multiple of tick spacing
+            (min_usable - 64, 0), // below MIN_TICK_INDEX
+            (0, max_usable + 64), // above MAX_TICK_INDEX
+        ] {
+            assert_eq!(
+                reset_error(&mut p, &whirlpool, lower, upper, true),
+                whirlpool_error_code(ErrorCode::InvalidTickIndex),
+                "range [{lower}, {upper})"
+            );
+        }
+        // nothing was written by the failed attempts
+        assert_eq!(p.get().tick_lower_index(), -64);
+        assert_eq!(p.get().tick_upper_index(), 64);
+    }
+
+    #[test]
+    fn full_range_only_pools_accept_only_full_range() {
+        let tick_spacing = FULL_RANGE_ONLY_TICK_SPACING_THRESHOLD;
+        let whirlpool = whirlpool(tick_spacing);
+        let (lower, upper) = Tick::full_range_indexes(tick_spacing);
+        let mut p = memory_mapped_position(&crate::state::Position::default());
+        assert_eq!(
+            reset_error(&mut p, &whirlpool, 0, upper, true),
+            whirlpool_error_code(ErrorCode::FullRangeOnlyPool)
+        );
+        expect_ok(
+            p.get_mut()
+                .reset_position_range(whirlpool.get(), lower, upper, true),
+        );
+    }
+}

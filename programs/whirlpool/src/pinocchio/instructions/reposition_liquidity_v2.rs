@@ -536,3 +536,69 @@ fn assert_new_range_token_increase_under_max(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pinocchio::test_utils::*;
+
+    #[test]
+    fn token_delta_direction() {
+        // existing range returns more than the new range needs: owner receives the difference
+        assert_eq!(calculate_token_delta(100, 40), (60, false));
+        // new range needs more than the existing range returns: owner sends the difference
+        assert_eq!(calculate_token_delta(40, 100), (60, true));
+        // equal amounts net to a zero-amount deposit
+        assert_eq!(calculate_token_delta(70, 70), (0, true));
+        assert_eq!(calculate_token_delta(0, 0), (0, true));
+        assert_eq!(calculate_token_delta(u64::MAX, 0), (u64::MAX, false));
+        assert_eq!(calculate_token_delta(0, u64::MAX), (u64::MAX, true));
+    }
+
+    #[test]
+    fn token_max_is_enforced_on_new_range_amount_plus_fee() {
+        assert!(assert_new_range_token_increase_under_max(90, 10, 100).is_ok());
+        assert_eq!(
+            expect_err_code(assert_new_range_token_increase_under_max(91, 10, 100)),
+            whirlpool_error_code(WhirlpoolErrorCode::TokenMaxExceeded)
+        );
+        assert_eq!(
+            expect_err_code(assert_new_range_token_increase_under_max(
+                u64::MAX,
+                1,
+                u64::MAX
+            )),
+            whirlpool_error_code(WhirlpoolErrorCode::TransferFeeCalculationError)
+        );
+    }
+
+    #[test]
+    fn transfer_info_without_transfer_fee() {
+        let mut mint = raw_spl_token_mint();
+        let mint_info = mint.account_info();
+
+        // withdraw: owner receives the net amount, token max still bounds the new range amount
+        let (amount, fee, from_owner) =
+            expect_ok(calculate_token_transfer_info(&mint_info, 1_000, 400, 400));
+        assert_eq!((amount, fee, from_owner), (600, 0, false));
+
+        // deposit: owner sends only the net amount
+        let (amount, fee, from_owner) =
+            expect_ok(calculate_token_transfer_info(&mint_info, 400, 1_000, 1_000));
+        assert_eq!((amount, fee, from_owner), (600, 0, true));
+
+        // token max applies to the full new range amount, not only the net deposit
+        let result = calculate_token_transfer_info(&mint_info, 400, 1_000, 999);
+        assert_eq!(
+            expect_err_code(result),
+            whirlpool_error_code(WhirlpoolErrorCode::TokenMaxExceeded)
+        );
+
+        // ... including when the owner is net receiving tokens
+        let result = calculate_token_transfer_info(&mint_info, 2_000, 1_000, 999);
+        assert_eq!(
+            expect_err_code(result),
+            whirlpool_error_code(WhirlpoolErrorCode::TokenMaxExceeded)
+        );
+    }
+}

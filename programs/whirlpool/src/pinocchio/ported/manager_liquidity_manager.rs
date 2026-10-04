@@ -581,3 +581,463 @@ pub fn pino_calculate_liquidity_token_deltas(
 
     Ok((delta_a, delta_b))
 }
+
+#[cfg(test)]
+mod anchor_parity_tests {
+    use super::*;
+    use crate::manager::{
+        liquidity_manager::calculate_liquidity_token_deltas,
+        position_manager::next_position_modify_liquidity_update,
+        tick_manager::{
+            next_fee_growths_inside, next_reward_growths_inside, next_tick_modify_liquidity_update,
+        },
+        whirlpool_manager::{next_whirlpool_liquidity, next_whirlpool_reward_infos},
+    };
+    use crate::pinocchio::test_utils::*;
+    use crate::state::{Whirlpool, WhirlpoolRewardInfo};
+
+    const ITERATIONS: u64 = 5_000;
+
+    fn next_reward_infos(
+        rng: &mut Rng,
+        whirlpool: &Whirlpool,
+    ) -> ([WhirlpoolRewardInfo; NUM_REWARDS], [u128; NUM_REWARDS]) {
+        let mut infos = whirlpool.reward_infos;
+        let mut growths = [0u128; NUM_REWARDS];
+        for i in 0..NUM_REWARDS {
+            if infos[i].initialized() {
+                infos[i].growth_global_x64 = rng.u128();
+            }
+            growths[i] = infos[i].growth_global_x64;
+        }
+        (infos, growths)
+    }
+
+    #[test]
+    fn reward_growth_global_matches_anchor() {
+        let mut rng = Rng::new(1);
+        for _ in 0..ITERATIONS {
+            let whirlpool = rng.whirlpool();
+            let mm_whirlpool = memory_mapped_whirlpool(&whirlpool);
+            let timestamp = match rng.below(4) {
+                0 => whirlpool.reward_last_updated_timestamp,
+                1 => whirlpool.reward_last_updated_timestamp.wrapping_sub(1),
+                _ => whirlpool
+                    .reward_last_updated_timestamp
+                    .saturating_add(rng.below(10_000_000)),
+            };
+
+            let anchor = next_whirlpool_reward_infos(&whirlpool, timestamp);
+            let pino = pino_next_whirlpool_reward_growth_global(mm_whirlpool.get(), timestamp);
+            match (anchor, pino) {
+                (Ok(anchor), Ok(pino)) => {
+                    assert_eq!(anchor.map(|info| info.growth_global_x64), pino)
+                }
+                (Err(anchor), Err(pino)) => {
+                    assert_eq!(whirlpool_error_code(anchor), error_code(pino))
+                }
+                _ => panic!("result kind mismatch"),
+            }
+        }
+    }
+
+    #[test]
+    fn whirlpool_liquidity_matches_anchor() {
+        let mut rng = Rng::new(2);
+        for _ in 0..ITERATIONS {
+            let whirlpool = rng.whirlpool();
+            let mm_whirlpool = memory_mapped_whirlpool(&whirlpool);
+            let (lower, upper) = (rng.tick_index(), rng.tick_index());
+            let delta = rng.i128();
+
+            let anchor = next_whirlpool_liquidity(&whirlpool, upper, lower, delta);
+            let pino = pino_next_whirlpool_liquidity(mm_whirlpool.get(), upper, lower, delta);
+            match (anchor, pino) {
+                (Ok(anchor), Ok(pino)) => assert_eq!(anchor, pino),
+                (Err(anchor), Err(pino)) => {
+                    assert_eq!(whirlpool_error_code(anchor), error_code(pino))
+                }
+                _ => panic!("result kind mismatch"),
+            }
+        }
+    }
+
+    #[test]
+    fn tick_modify_liquidity_update_matches_anchor() {
+        let mut rng = Rng::new(3);
+        for _ in 0..ITERATIONS {
+            let whirlpool = rng.whirlpool();
+            let (next_infos, next_growths) = next_reward_infos(&mut rng, &whirlpool);
+            let tick = rng.tick();
+            let mm_tick = memory_mapped_tick(&tick);
+            let tick_index = rng.tick_index();
+            let delta = rng.i128();
+            let is_upper = rng.bool();
+
+            let anchor = next_tick_modify_liquidity_update(
+                &tick,
+                tick_index,
+                whirlpool.tick_current_index,
+                whirlpool.fee_growth_global_a,
+                whirlpool.fee_growth_global_b,
+                &next_infos,
+                delta,
+                is_upper,
+            );
+            let pino = pino_next_tick_modify_liquidity_update(
+                mm_tick.get(),
+                tick_index,
+                whirlpool.tick_current_index,
+                whirlpool.fee_growth_global_a,
+                whirlpool.fee_growth_global_b,
+                &next_growths,
+                delta,
+                is_upper,
+            );
+            match (anchor, pino) {
+                (Ok(anchor), Ok(pino)) => {
+                    assert_eq!(anchor.initialized, pino.initialized);
+                    assert_eq!(anchor.liquidity_net, pino.liquidity_net);
+                    assert_eq!(anchor.liquidity_gross, pino.liquidity_gross);
+                    assert_eq!(anchor.fee_growth_outside_a, pino.fee_growth_outside_a);
+                    assert_eq!(anchor.fee_growth_outside_b, pino.fee_growth_outside_b);
+                    assert_eq!(anchor.reward_growths_outside, pino.reward_growths_outside);
+                }
+                (Err(anchor), Err(pino)) => {
+                    assert_eq!(whirlpool_error_code(anchor), error_code(pino))
+                }
+                _ => panic!("result kind mismatch"),
+            }
+        }
+    }
+
+    #[test]
+    fn fee_and_reward_growths_inside_match_anchor() {
+        let mut rng = Rng::new(4);
+        for _ in 0..ITERATIONS {
+            let whirlpool = rng.whirlpool();
+            let mm_whirlpool = memory_mapped_whirlpool(&whirlpool);
+            let (next_infos, next_growths) = next_reward_infos(&mut rng, &whirlpool);
+            let (tick_lower, tick_upper) = (rng.tick(), rng.tick());
+            let (mm_lower, mm_upper) = (
+                memory_mapped_tick(&tick_lower),
+                memory_mapped_tick(&tick_upper),
+            );
+            let (lower_index, upper_index) = (rng.tick_index(), rng.tick_index());
+            let current = match rng.below(4) {
+                0 => lower_index,
+                1 => upper_index,
+                _ => whirlpool.tick_current_index,
+            };
+
+            assert_eq!(
+                next_fee_growths_inside(
+                    current,
+                    &tick_lower,
+                    lower_index,
+                    &tick_upper,
+                    upper_index,
+                    whirlpool.fee_growth_global_a,
+                    whirlpool.fee_growth_global_b,
+                ),
+                pino_next_fee_growths_inside(
+                    current,
+                    mm_lower.get(),
+                    lower_index,
+                    mm_upper.get(),
+                    upper_index,
+                    whirlpool.fee_growth_global_a,
+                    whirlpool.fee_growth_global_b,
+                )
+            );
+
+            assert_eq!(
+                next_reward_growths_inside(
+                    current,
+                    &tick_lower,
+                    lower_index,
+                    &tick_upper,
+                    upper_index,
+                    &next_infos,
+                ),
+                pino_next_reward_growths_inside(
+                    current,
+                    mm_lower.get(),
+                    lower_index,
+                    mm_upper.get(),
+                    upper_index,
+                    mm_whirlpool.get().reward_infos(),
+                    &next_growths,
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn position_modify_liquidity_update_matches_anchor() {
+        let mut rng = Rng::new(5);
+        for _ in 0..ITERATIONS {
+            let position = rng.position();
+            let mm_position = memory_mapped_position(&position);
+            let delta = match rng.below(4) {
+                0 => -(position.liquidity as i128),
+                1 => 0,
+                _ => rng.i128(),
+            };
+            let (inside_a, inside_b) = (rng.u128(), rng.u128());
+            let rewards_inside = [rng.u128(), rng.u128(), rng.u128()];
+
+            let anchor = next_position_modify_liquidity_update(
+                &position,
+                delta,
+                inside_a,
+                inside_b,
+                &rewards_inside,
+            );
+            let pino = pino_next_position_modify_liquidity_update(
+                mm_position.get(),
+                delta,
+                inside_a,
+                inside_b,
+                &rewards_inside,
+            );
+            match (anchor, pino) {
+                (Ok(anchor), Ok(pino)) => assert_eq!(anchor, pino),
+                (Err(anchor), Err(pino)) => {
+                    assert_eq!(whirlpool_error_code(anchor), error_code(pino))
+                }
+                _ => panic!("result kind mismatch"),
+            }
+        }
+    }
+
+    #[test]
+    fn liquidity_token_deltas_match_anchor() {
+        let mut rng = Rng::new(6);
+        for _ in 0..ITERATIONS {
+            let mut position = rng.position();
+            let (a, b) = (rng.tick_index(), rng.tick_index());
+            position.tick_lower_index = a.min(b);
+            position.tick_upper_index = a.max(b);
+            let mm_position = memory_mapped_position(&position);
+            let current = rng.tick_index();
+            let sqrt_price = sqrt_price_from_tick_index(current);
+            let delta = match rng.below(3) {
+                0 => rng.next_u64() as i128,
+                1 => -(rng.next_u64() as i128),
+                _ => rng.i128(),
+            };
+
+            let anchor = calculate_liquidity_token_deltas(current, sqrt_price, &position, delta);
+            let pino = pino_calculate_liquidity_token_deltas(
+                current,
+                sqrt_price,
+                mm_position.get(),
+                delta,
+            );
+            match (anchor, pino) {
+                (Ok(anchor), Ok(pino)) => assert_eq!(anchor, pino),
+                (Err(anchor), Err(pino)) => assert_eq!(
+                    error_code(crate::pinocchio::errors::UnifiedError::from(anchor)),
+                    error_code(pino)
+                ),
+                _ => panic!("result kind mismatch"),
+            }
+        }
+    }
+}
+
+/// reposition_liquidity_v2 = remove all liquidity from the existing range, reset the range
+/// while keeping owed fees/rewards, then add liquidity to the new range. These tests pin the
+/// fee and reward accounting of that sequence.
+#[cfg(test)]
+mod reposition_fee_and_reward_invariant_tests {
+    use super::*;
+    use crate::pinocchio::test_utils::*;
+
+    fn growth(
+        fee_a: u128,
+        fee_b: u128,
+        rewards: [u128; NUM_REWARDS],
+    ) -> (u128, u128, [u128; NUM_REWARDS]) {
+        (fee_a, fee_b, rewards)
+    }
+
+    fn apply(
+        position: &mut MemoryMappedPosition,
+        liquidity_delta: i128,
+        (fee_a, fee_b, rewards): (u128, u128, [u128; NUM_REWARDS]),
+    ) {
+        let update = expect_ok(pino_next_position_modify_liquidity_update(
+            position,
+            liquidity_delta,
+            fee_a,
+            fee_b,
+            &rewards,
+        ));
+        position.update(&update);
+    }
+
+    fn owed(position: &MemoryMappedPosition) -> (u64, u64, [u64; NUM_REWARDS]) {
+        let rewards = position.reward_infos();
+        (
+            position.fee_owed_a(),
+            position.fee_owed_b(),
+            [
+                rewards[0].amount_owed(),
+                rewards[1].amount_owed(),
+                rewards[2].amount_owed(),
+            ],
+        )
+    }
+
+    fn whirlpool() -> MemoryMapped<MemoryMappedWhirlpool> {
+        memory_mapped_whirlpool(&crate::state::Whirlpool {
+            tick_spacing: 64,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn worked_example() {
+        let whirlpool = whirlpool();
+        const Q64: u128 = 1 << 64;
+        let mut position = memory_mapped_position(&crate::state::Position {
+            liquidity: 1_000,
+            tick_lower_index: -128,
+            tick_upper_index: 128,
+            fee_growth_checkpoint_a: 5 * Q64,
+            fee_owed_a: 7,
+            fee_growth_checkpoint_b: 0,
+            fee_owed_b: 0,
+            ..Default::default()
+        });
+        let position = position.get_mut();
+
+        // existing range earned 3/liquidity of token A and 2/liquidity of token B since checkpoint
+        apply(position, -1_000, growth(8 * Q64, 2 * Q64, [0; NUM_REWARDS]));
+        assert_eq!(position.liquidity(), 0);
+        assert_eq!(position.fee_owed_a(), 7 + 3_000);
+        assert_eq!(position.fee_owed_b(), 2_000);
+
+        expect_ok(position.reset_position_range(whirlpool.get(), 0, 640, true));
+        assert_eq!(position.fee_owed_a(), 3_007);
+        assert_eq!(position.fee_owed_b(), 2_000);
+
+        // new range already has a large fee growth inside: it must not be credited
+        apply(
+            position,
+            500,
+            growth(1_000 * Q64, 900 * Q64, [0; NUM_REWARDS]),
+        );
+        assert_eq!(position.liquidity(), 500);
+        assert_eq!(position.fee_owed_a(), 3_007);
+        assert_eq!(position.fee_owed_b(), 2_000);
+
+        // only growth after the reposition is credited, at the new liquidity
+        apply(
+            position,
+            0,
+            growth(1_002 * Q64, 901 * Q64, [0; NUM_REWARDS]),
+        );
+        assert_eq!(position.fee_owed_a(), 3_007 + 1_000);
+        assert_eq!(position.fee_owed_b(), 2_000 + 500);
+    }
+
+    #[test]
+    fn randomized_reposition_preserves_owed_and_never_credits_new_range_history() {
+        let whirlpool = whirlpool();
+        let mut rng = Rng::new(7);
+        for _ in 0..5_000 {
+            let mut anchor_position = rng.position();
+            anchor_position.tick_lower_index = -64 * (1 + rng.below(100) as i32);
+            anchor_position.tick_upper_index = 64 * (1 + rng.below(100) as i32);
+            let mut mm_position = memory_mapped_position(&anchor_position);
+            let position = mm_position.get_mut();
+            let existing_liquidity = position.liquidity();
+
+            // 1. decrease all liquidity from the existing range
+            let existing_inside =
+                growth(rng.u128(), rng.u128(), [rng.u128(), rng.u128(), rng.u128()]);
+            let expected = expect_ok(pino_next_position_modify_liquidity_update(
+                position,
+                -(existing_liquidity as i128),
+                existing_inside.0,
+                existing_inside.1,
+                &existing_inside.2,
+            ));
+            apply(position, -(existing_liquidity as i128), existing_inside);
+            assert_eq!(position.liquidity(), 0);
+            let owed_after_decrease = owed(position);
+            assert_eq!(owed_after_decrease.0, expected.fee_owed_a);
+            assert_eq!(owed_after_decrease.1, expected.fee_owed_b);
+
+            // 2. reset the range, keeping owed amounts
+            let new_lower = 64 * rng.below(100) as i32;
+            let new_upper = new_lower + 64 * (1 + rng.below(100) as i32);
+            expect_ok(position.reset_position_range(whirlpool.get(), new_lower, new_upper, true));
+            assert_eq!(position.tick_lower_index(), new_lower);
+            assert_eq!(position.tick_upper_index(), new_upper);
+            assert_eq!(position.fee_growth_checkpoint_a(), 0);
+            assert_eq!(position.fee_growth_checkpoint_b(), 0);
+            for reward_info in position.reward_infos() {
+                assert_eq!(reward_info.growth_inside_checkpoint(), 0);
+            }
+            assert_eq!(owed(position), owed_after_decrease);
+
+            // 3. increase liquidity into the new range: nothing is credited, checkpoints move
+            let new_liquidity = 1 + rng.below(u64::MAX) as u128;
+            let new_inside = growth(rng.u128(), rng.u128(), [rng.u128(), rng.u128(), rng.u128()]);
+            apply(position, new_liquidity as i128, new_inside);
+            assert_eq!(position.liquidity(), new_liquidity);
+            assert_eq!(owed(position), owed_after_decrease);
+            assert_eq!(position.fee_growth_checkpoint_a(), new_inside.0);
+            assert_eq!(position.fee_growth_checkpoint_b(), new_inside.1);
+            for (i, reward_info) in position.reward_infos().iter().enumerate() {
+                assert_eq!(reward_info.growth_inside_checkpoint(), new_inside.2[i]);
+            }
+
+            // 4. later growth in the new range accrues at the new liquidity only
+            let accrued = rng.below(u64::MAX) as u128;
+            apply(
+                position,
+                0,
+                growth(
+                    new_inside.0.wrapping_add(accrued),
+                    new_inside.1.wrapping_add(accrued),
+                    new_inside.2.map(|g| g.wrapping_add(accrued)),
+                ),
+            );
+            let credited = checked_mul_shift_right(new_liquidity, accrued).unwrap();
+            let (fee_a, fee_b, rewards) = owed(position);
+            assert_eq!(fee_a, owed_after_decrease.0.wrapping_add(credited));
+            assert_eq!(fee_b, owed_after_decrease.1.wrapping_add(credited));
+            for (reward_owed, reward_owed_after_decrease) in
+                rewards.iter().zip(owed_after_decrease.2)
+            {
+                assert_eq!(
+                    *reward_owed,
+                    reward_owed_after_decrease.wrapping_add(credited)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reset_with_remaining_liquidity_is_rejected_even_when_keeping_owed() {
+        let whirlpool = whirlpool();
+        let mut position = memory_mapped_position(&crate::state::Position {
+            liquidity: 1,
+            tick_lower_index: -64,
+            tick_upper_index: 64,
+            ..Default::default()
+        });
+        let result = position
+            .get_mut()
+            .reset_position_range(whirlpool.get(), 0, 128, true);
+        assert_eq!(
+            expect_err_code(result),
+            whirlpool_error_code(crate::errors::ErrorCode::ClosePositionNotEmpty)
+        );
+    }
+}

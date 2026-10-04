@@ -6,6 +6,9 @@ mod ported;
 mod state;
 mod utils;
 
+#[cfg(test)]
+mod test_utils;
+
 pub mod instructions;
 
 pub type Result<T> = core::result::Result<T, errors::UnifiedError>;
