@@ -1,0 +1,104 @@
+{
+  "harnesses": {
+    "host": "cargo test -p whirlpool --lib pinocchio",
+    "litesvm": "anchor build -p whirlpool && yarn workspace @orca-so/whirlpools-sdk vitest run tests/integration/v2-ix/liquidity tests/integration/token-extensions tests/integration/multi-ix"
+  },
+  "mutants": [
+    {
+      "id": "M1",
+      "bug": "Fee checkpoint A is never moved forward, so fees are credited again on every update.",
+      "file": "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs",
+      "find": "update.fee_growth_checkpoint_a = fee_growth_inside_a;",
+      "replace": "update.fee_growth_checkpoint_a = position.fee_growth_checkpoint_a();",
+      "harness": "host"
+    },
+    {
+      "id": "M2",
+      "bug": "The range reset is allowed while the position still has liquidity.",
+      "file": "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs",
+      "find": "            return self.liquidity() == 0;",
+      "replace": "            return true;",
+      "harness": "host"
+    },
+    {
+      "id": "M3",
+      "bug": "Token amounts round in the user's favour (down on deposit, up on withdrawal).",
+      "file": "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs",
+      "find": "    let round_up = liquidity_delta > 0;",
+      "replace": "    let round_up = liquidity_delta < 0;",
+      "harness": "host"
+    },
+    {
+      "id": "M4",
+      "bug": "The dynamic tick array bitmap isn't cleared when a tick is removed, so later offsets point at the wrong bytes.",
+      "file": "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/dynamic_tick_array.rs",
+      "find": "            self.update_tick_bitmap(tick_offset, false);",
+      "replace": "            // mutant: bitmap not updated",
+      "harness": "host"
+    },
+    {
+      "id": "M5",
+      "bug": "Removing a tick shifts the following bytes by the wrong amount, corrupting neighbouring ticks.",
+      "file": "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/dynamic_tick_array.rs",
+      "find": "            shift_data.rotate_left(crate::state::DynamicTickData::LEN);",
+      "replace": "            shift_data.rotate_left(crate::state::DynamicTickData::LEN - 1);",
+      "harness": "host"
+    },
+    {
+      "id": "M6",
+      "bug": "The token max check is off by one at the boundary.",
+      "file": "programs/whirlpool/src/pinocchio/instructions/reposition_liquidity_v2.rs",
+      "find": "    if new_range_amount_with_fee > token_max {",
+      "replace": "    if new_range_amount_with_fee >= token_max {",
+      "harness": "host"
+    },
+    {
+      "id": "M7",
+      "bug": "Reward growth is advanced twice as fast as emissions allow.",
+      "file": "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs",
+      "find": "        next_reward_infos[i] = curr_growth_global.wrapping_add(reward_growth_delta);",
+      "replace": "        next_reward_infos[i] = curr_growth_global.wrapping_add(reward_growth_delta.wrapping_mul(2));",
+      "harness": "host"
+    },
+    {
+      "id": "M8",
+      "bug": "Tick rent is refunded to the position on every decrease, not only when its liquidity reaches 0, draining dynamic tick arrays.",
+      "file": "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs",
+      "find": "    if position.liquidity() != 0 && position_update.liquidity == 0 {",
+      "replace": "    if position.liquidity() != 0 {",
+      "harness": "litesvm"
+    },
+    {
+      "id": "M9",
+      "bug": "On a net deposit, the owner sends the amount before transfer fee, so the vault receives less than the liquidity requires.",
+      "file": "programs/whirlpool/src/pinocchio/instructions/reposition_liquidity_v2.rs",
+      "find": "                transfer_fee_included_amount.amount,",
+      "replace": "                token_delta,",
+      "harness": "litesvm"
+    },
+    {
+      "id": "M10",
+      "bug": "Reposition no longer rejects locked positions.",
+      "file": "programs/whirlpool/src/pinocchio/instructions/reposition_liquidity_v2.rs",
+      "find": "    if pino_is_locked_position(&position_token_account) {",
+      "replace": "    if false && pino_is_locked_position(&position_token_account) {",
+      "harness": "litesvm"
+    },
+    {
+      "id": "M11",
+      "bug": "The rent top-up from the funder is skipped, so the position pays tick rent it doesn't hold.",
+      "file": "programs/whirlpool/src/pinocchio/ported/position.rs",
+      "find": "    if position_lamports < all_required_rent {",
+      "replace": "    if false && position_lamports < all_required_rent {",
+      "harness": "litesvm"
+    },
+    {
+      "id": "M12",
+      "bug": "The existing-range decrease is skipped even when the position has liquidity, so the old ticks keep liquidity the position no longer owns.",
+      "file": "programs/whirlpool/src/pinocchio/instructions/reposition_liquidity_v2.rs",
+      "find": "    if position_existing_range_liquidity == 0 {",
+      "replace": "    if position_existing_range_liquidity == 0 || true {",
+      "harness": "litesvm"
+    }
+  ]
+}

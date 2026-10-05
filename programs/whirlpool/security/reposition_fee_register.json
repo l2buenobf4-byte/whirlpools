@@ -1,0 +1,599 @@
+{
+  "scope": "Pinocchio reposition_liquidity_v2 and the fee, reward and rent accounting it touches",
+  "verdict": "open",
+  "scope_fingerprint": "",
+  "reviewer": "",
+  "scope_files": [
+    "programs/whirlpool/src/pinocchio/instructions/reposition_liquidity_v2.rs",
+    "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs",
+    "programs/whirlpool/src/pinocchio/ported/manager_tick_array_manager.rs",
+    "programs/whirlpool/src/pinocchio/ported/position.rs",
+    "programs/whirlpool/src/pinocchio/ported/util_token.rs",
+    "programs/whirlpool/src/pinocchio/ported/util_shared.rs",
+    "programs/whirlpool/src/pinocchio/ported/util_remaining_accounts_utils.rs",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/dynamic_tick_array.rs",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/loader.rs",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/mod.rs",
+    "programs/whirlpool/src/pinocchio/cpi/token_transfer_checked.rs",
+    "programs/whirlpool/src/pinocchio/utils/account_load.rs",
+    "programs/whirlpool/src/pinocchio/utils/account_info_iter.rs"
+  ],
+  "trivial": {
+    "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::amount_owed": "field accessor",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::fee_growth_checkpoint_a": "field accessor",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::fee_growth_checkpoint_b": "field accessor",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::fee_owed_a": "field accessor",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::fee_owed_b": "field accessor",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::growth_inside_checkpoint": "field accessor",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::liquidity": "field accessor",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::position_mint": "field accessor",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::reward_infos": "field accessor",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::tick_lower_index": "field accessor",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::tick_upper_index": "field accessor",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::whirlpool": "field accessor",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/dynamic_tick_array.rs::is_variable_size": "constant",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/dynamic_tick_array.rs::start_tick_index": "field accessor",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/dynamic_tick_array.rs::tick_bitmap": "field accessor",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/dynamic_tick_array.rs::whirlpool": "field accessor",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/mod.rs::is_variable_size": "trait declaration",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/mod.rs::start_tick_index": "trait declaration",
+    "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/mod.rs::whirlpool": "trait declaration",
+    "programs/whirlpool/src/pinocchio/utils/account_info_iter.rs::new": "constructor",
+    "programs/whirlpool/src/pinocchio/utils/account_info_iter.rs::remaining_accounts": "slice accessor"
+  },
+  "items": [
+    {
+      "id": "I1",
+      "kind": "invariant",
+      "claim": "Vault solvency: after every instruction, each vault holds at least the rounded-up token value of all positions' liquidity plus all fee_owed plus protocol fees owed; each reward vault holds at least all reward_owed.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "I2",
+      "kind": "invariant",
+      "claim": "Fee conservation: fees credited to all positions over time never exceed LP fees paid by swaps, beyond a rounding allowance fixed in advance.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "I3",
+      "kind": "invariant",
+      "claim": "No profitable round trip: a wallet that only adds, removes, repositions and collects, with no swaps by others in between, never ends with more of any token than it started with.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "I4",
+      "kind": "invariant",
+      "claim": "Pool liquidity equals the sum of liquidity_net of initialised ticks at or below the current tick, and every tick's liquidity_gross equals the sum of |liquidity| of positions using it.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "I5",
+      "kind": "invariant",
+      "claim": "Per dynamic tick array, lamports in minus lamports out equals 779,520 times the positions currently holding liquidity with a tick in it, and every program-owned account stays rent-exempt.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "I6",
+      "kind": "invariant",
+      "claim": "After any instruction, a position with liquidity > 0 has checkpoints equal to its range's current growth inside, and owed amounts only decrease through collect.",
+      "covers": [],
+      "status": "partial",
+      "owner": "",
+      "tests": [
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::randomized_reposition_preserves_owed_and_never_credits_new_range_history"
+      ],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "I7",
+      "kind": "invariant",
+      "claim": "Reposition leaves pool, ticks, position, vaults and lamports identical to running decrease_v2, collect, reset_position_range and increase_v2 separately, apart from the documented netting.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "I8",
+      "kind": "invariant",
+      "claim": "The Pinocchio liquidity maths and dynamic tick array match the Anchor implementation for the same inputs, including error codes and bytes.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::pino_next_fee_growths_inside",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::pino_next_reward_growths_inside",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::pino_next_tick_modify_liquidity_update",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::pino_next_whirlpool_liquidity",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::pino_calculate_liquidity_token_deltas"
+      ],
+      "status": "tested",
+      "owner": "",
+      "tests": [
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::reward_growth_global_matches_anchor",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::whirlpool_liquidity_matches_anchor",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::tick_modify_liquidity_update_matches_anchor",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::fee_and_reward_growths_inside_match_anchor",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::position_modify_liquidity_update_matches_anchor",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::liquidity_token_deltas_match_anchor",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/dynamic_tick_array.rs::random_init_deinit_sequences_match_anchor_byte_for_byte"
+      ],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A1",
+      "kind": "assumption",
+      "claim": "The range reset only runs when the position's liquidity is 0, even with keep_owed = true.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::reset_position_range",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::is_position_empty",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::reset_reward_growth_checkpoints",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::validate_tick_range_for_whirlpool",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::set_tick_lower_index",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::set_tick_upper_index"
+      ],
+      "status": "tested",
+      "owner": "",
+      "tests": [
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::keep_owed_only_requires_zero_liquidity",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::without_keep_owed_owed_amounts_block_reset",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::rejects_same_and_invalid_ranges",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::full_range_only_pools_accept_only_full_range",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::reset_with_remaining_liquidity_is_rejected_even_when_keeping_owed"
+      ],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A2",
+      "kind": "assumption",
+      "claim": "The first increase after the reset sees liquidity 0, credits nothing, and writes the real checkpoints before liquidity becomes non-zero, in the full handler as well as in the maths.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::pino_next_position_modify_liquidity_update",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::_pino_calculate_modify_liquidity",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::pino_calculate_modify_liquidity",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::pino_calculate_fee_and_reward_growths",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::update",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::set_liquidity",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::set_fee_growth_checkpoint_a",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::set_fee_growth_checkpoint_b",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::set_fee_owed_a",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::set_fee_owed_b",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/position.rs::set_reward_infos"
+      ],
+      "status": "partial",
+      "owner": "",
+      "tests": [
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::worked_example",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::randomized_reposition_preserves_owed_and_never_credits_new_range_history"
+      ],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A3",
+      "kind": "assumption",
+      "claim": "Reward growth advances once per timestamp: the increase step is a no-op for rewards after the decrease step, and does the update itself when the decrease step is skipped.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::pino_next_whirlpool_reward_growth_global",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::pino_sync_modify_liquidity_values"
+      ],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A4",
+      "kind": "assumption",
+      "claim": "Decrease rounds down and increase rounds up, so netting D - I never favours the user and never reopens a rounding gap that separate instructions would close.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/instructions/reposition_liquidity_v2.rs::calculate_token_delta",
+        "programs/whirlpool/src/pinocchio/instructions/reposition_liquidity_v2.rs::calculate_token_transfer_info",
+        "programs/whirlpool/src/pinocchio/instructions/reposition_liquidity_v2.rs::assert_new_range_token_increase_under_max",
+        "programs/whirlpool/src/pinocchio/instructions/reposition_liquidity_v2.rs::execute_token_delta_transfers"
+      ],
+      "status": "partial",
+      "owner": "",
+      "tests": [
+        "programs/whirlpool/src/pinocchio/instructions/reposition_liquidity_v2.rs::token_delta_direction",
+        "programs/whirlpool/src/pinocchio/instructions/reposition_liquidity_v2.rs::token_max_is_enforced_on_new_range_amount_plus_fee",
+        "programs/whirlpool/src/pinocchio/instructions/reposition_liquidity_v2.rs::transfer_info_without_transfer_fee"
+      ],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A5",
+      "kind": "assumption",
+      "claim": "The transfer fee used in the maths equals the fee Token-2022 charges at transfer time (same instruction, same epoch, same mint state), including in the first slot of a new epoch.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_get_epoch_transfer_fee",
+        "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_calculate_transfer_fee_excluded_amount"
+      ],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A6",
+      "kind": "assumption",
+      "claim": "The 100% fee and maximum-fee-cap cases of the inverse fee calculation either pass the fee check or fail closed.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_calculate_transfer_fee_included_amount"
+      ],
+      "status": "tested",
+      "owner": "",
+      "tests": [
+        "legacy-sdk/whirlpool/tests/integration/token-extensions/transfer-fee.test.ts::reposition_liquidity_v2: transfer fee rate is 0%",
+        "legacy-sdk/whirlpool/tests/integration/token-extensions/transfer-fee.test.ts::reposition_liquidity_v2: [FAIL] transfer fee rate is 100% without cap",
+        "legacy-sdk/whirlpool/tests/integration/token-extensions/transfer-fee.test.ts::reposition_liquidity_v2: transfer fee rate is 100% with cap"
+      ],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A7",
+      "kind": "assumption",
+      "claim": "Accounts the handlers don't check themselves (token owner accounts) are checked by TransferChecked; every other account is checked for owner, type and address; no v1 handler can move tokens from a Token-2022 vault.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/instructions/reposition_liquidity_v2.rs::handler",
+        "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_transfer_from_owner_to_vault",
+        "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_transfer_from_vault_to_owner",
+        "programs/whirlpool/src/pinocchio/utils/account_load.rs::check_owner_program",
+        "programs/whirlpool/src/pinocchio/utils/account_load.rs::check_discriminator",
+        "programs/whirlpool/src/pinocchio/utils/account_load.rs::load_account",
+        "programs/whirlpool/src/pinocchio/utils/account_load.rs::load_account_mut",
+        "programs/whirlpool/src/pinocchio/utils/account_load.rs::load_account_unchecked",
+        "programs/whirlpool/src/pinocchio/utils/account_load.rs::load_account_mut_unchecked",
+        "programs/whirlpool/src/pinocchio/utils/account_load.rs::load_token_program_account",
+        "programs/whirlpool/src/pinocchio/utils/account_load.rs::load_token_program_account_unchecked",
+        "programs/whirlpool/src/pinocchio/utils/account_info_iter.rs::next",
+        "programs/whirlpool/src/pinocchio/utils/account_info_iter.rs::next_account",
+        "programs/whirlpool/src/pinocchio/utils/account_info_iter.rs::next_mut",
+        "programs/whirlpool/src/pinocchio/utils/account_info_iter.rs::next_signer",
+        "programs/whirlpool/src/pinocchio/utils/account_info_iter.rs::next_signer_mut",
+        "programs/whirlpool/src/pinocchio/utils/account_info_iter.rs::next_program_account",
+        "programs/whirlpool/src/pinocchio/utils/account_info_iter.rs::next_program_memo",
+        "programs/whirlpool/src/pinocchio/utils/account_info_iter.rs::next_program_system",
+        "programs/whirlpool/src/pinocchio/utils/account_info_iter.rs::next_program_token",
+        "programs/whirlpool/src/pinocchio/utils/account_info_iter.rs::next_program_token_or_token_2022"
+      ],
+      "status": "partial",
+      "owner": "",
+      "tests": [
+        "legacy-sdk/whirlpool/tests/integration/v2-ix/liquidity/reposition_liquidity_v2.test.ts::fails when passed token_mint_a does not match whirlpool's token_mint_a",
+        "legacy-sdk/whirlpool/tests/integration/v2-ix/liquidity/reposition_liquidity_v2.test.ts::fails when passed token_program_a is token_metadata",
+        "programs/whirlpool/src/pinocchio/utils/account_load.rs::test_reject_multisig_account"
+      ],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A8",
+      "kind": "assumption",
+      "claim": "When the position has no liquidity, the existing-range tick-array accounts are never read, written or debited.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/instructions/reposition_liquidity_v2.rs::decrease_liquidity_from_existing_range"
+      ],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A9",
+      "kind": "assumption",
+      "claim": "When the existing and new ranges share a dynamic tick array, the shrink in the decrease step and the grow in the increase step leave every other tick unchanged, byte for byte, in the full handler.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/instructions/reposition_liquidity_v2.rs::increase_liquidity_into_new_range",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/dynamic_tick_array.rs::update_tick",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/dynamic_tick_array.rs::get_tick",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/dynamic_tick_array.rs::byte_offset",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/dynamic_tick_array.rs::update_tick_bitmap",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/loader.rs::load",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/loader.rs::load_tick_array",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/loader.rs::load_tick_array_mut",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/loader.rs::deref",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/loader.rs::deref_mut",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/mod.rs::get_tick",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/mod.rs::update_tick",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/mod.rs::check_is_usable_tick_and_get_offset",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/mod.rs::check_in_array_bounds",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/mod.rs::in_search_range",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/mod.rs::check_is_out_of_bounds",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/mod.rs::get_offset",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/mod.rs::tick_offset",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/mod.rs::is_min_tick_array",
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/mod.rs::is_max_tick_array"
+      ],
+      "status": "partial",
+      "owner": "",
+      "tests": [
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/dynamic_tick_array.rs::random_init_deinit_sequences_match_anchor_byte_for_byte"
+      ],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A10",
+      "kind": "assumption",
+      "claim": "Byte shifts past the account's data length stay inside the runtime's 10 KiB realloc padding, and the resize order (grow before write, write before shrink) is followed on every path.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/ported/manager_tick_array_manager.rs::pino_increase_tick_array_size",
+        "programs/whirlpool/src/pinocchio/ported/manager_tick_array_manager.rs::pino_decrease_tick_array_size",
+        "programs/whirlpool/src/pinocchio/ported/manager_tick_array_manager.rs::pino_tick_array_size_update_execute"
+      ],
+      "status": "partial",
+      "owner": "",
+      "tests": [
+        "programs/whirlpool/src/pinocchio/state/whirlpool/tick_array/dynamic_tick_array.rs::nothing_past_the_account_length_is_ever_read_into_state"
+      ],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A11",
+      "kind": "assumption",
+      "claim": "Rent moves between a position and a tick array are symmetric; a tick array's type never changes; no instruction closes a tick array.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/ported/manager_tick_array_manager.rs::pino_tick_array_rent_transfer_execute",
+        "programs/whirlpool/src/pinocchio/ported/manager_tick_array_manager.rs::pino_transfer_rent_to_position",
+        "programs/whirlpool/src/pinocchio/ported/manager_tick_array_manager.rs::pino_transfer_rent_to_tick_array",
+        "programs/whirlpool/src/pinocchio/ported/manager_liquidity_manager.rs::pino_calculate_modify_tick_array"
+      ],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A12",
+      "kind": "assumption",
+      "claim": "Dropping Anchor's three verify_rent_exempt checks after rent moves is safe because the runtime enforces rent exemption, including across a rent-regime change.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/ported/manager_tick_array_manager.rs::pino_update_tick_array_accounts"
+      ],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A13",
+      "kind": "assumption",
+      "claim": "The unreachable! safeguard in the rent top-up can't be hit for any existing position, including ones opened before the fallback margin existed.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/ported/position.rs::pino_ensure_position_has_enough_rent_for_ticks"
+      ],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A14",
+      "kind": "assumption",
+      "claim": "CPIs that skip borrow checks are safe while whirlpool and position data are borrowed for writing, and forwarding hook accounts with their transaction-level signer and writable flags gives a hostile hook nothing it can use.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/cpi/token_transfer_checked.rs::invoke_signed",
+        "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_transfer_from_owner_to_vault_v2",
+        "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_transfer_from_vault_to_owner_v2",
+        "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_is_transfer_hook_enabled",
+        "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_is_transfer_memo_required"
+      ],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A15",
+      "kind": "assumption",
+      "claim": "Remaining-account slices can't be mislabelled into effect: deposit and withdrawal hook accounts are only used for their own direction, and duplicates are rejected.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/ported/util_remaining_accounts_utils.rs::pino_parse_remaining_accounts"
+      ],
+      "status": "partial",
+      "owner": "",
+      "tests": [
+        "legacy-sdk/whirlpool/tests/integration/token-extensions/transfer-hook.test.ts::reposition_liquidity_v2: [Fail] with transfer hook, but no extra accounts provided for A deposit"
+      ],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A16",
+      "kind": "assumption",
+      "claim": "Only the NFT owner, or a delegate with delegated_amount == 1, can act on a position, and frozen (locked) positions are rejected.",
+      "covers": [
+        "programs/whirlpool/src/pinocchio/ported/util_shared.rs::pino_verify_position_authority",
+        "programs/whirlpool/src/pinocchio/ported/util_shared.rs::pino_validate_owner",
+        "programs/whirlpool/src/pinocchio/ported/util_shared.rs::pino_is_locked_position"
+      ],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "A17",
+      "kind": "assumption",
+      "claim": "If the prepare/commit swap interface (PR 1317) is merged, every Pinocchio liquidity handler bumps the pool's state sequence.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "Q1",
+      "kind": "question",
+      "claim": "No sequence of instructions, in one transaction or several, reaches a position update while liquidity > 0 and the checkpoint is still 0.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "Q2",
+      "kind": "question",
+      "claim": "Repositioning A to B to A many times with no swaps never leaves the wallet with more of either token (price on a tick, shared ticks, tiny and huge liquidity).",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "Q3",
+      "kind": "question",
+      "claim": "With transfer fees of 0%, 1%, 100%, at the cap, and in the first slot of a new epoch, the vault always ends up with at least what the new liquidity requires.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "Q4",
+      "kind": "question",
+      "claim": "Reposition is never cheaper than decrease, collect, reset and increase for the same outcome, beyond the documented netting.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "Q5",
+      "kind": "question",
+      "claim": "With both ranges in the same dynamic array, full or nearly full and shaped beforehand by other wallets, all other LPs' ticks, the account length and the lamports are unchanged afterwards.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "Q6",
+      "kind": "question",
+      "claim": "Rent can't be taken out of a dynamic tick array that wasn't paid into it, by any mix of fixed and dynamic arrays, same-array ranges and zero-liquidity positions.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "Q7",
+      "kind": "question",
+      "claim": "Repositioning a zero-liquidity position with arbitrary writable accounts as the old tick arrays changes nothing in those accounts.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "Q8",
+      "kind": "question",
+      "claim": "Repositioning in the same second as another liquidity instruction on the same pool doesn't change reward accrual compared with different seconds.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "Q9",
+      "kind": "question",
+      "claim": "A deliberately hostile transfer-hook program can't observe, alter or profit from state during reposition's token transfers.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "Q10",
+      "kind": "question",
+      "claim": "When D equals I exactly, the zero-amount deposit behaves like the non-zero cases for hooks, memos, frozen accounts and events.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "Q11",
+      "kind": "question",
+      "claim": "No account ordering, duplication or aliasing lets a delegate, non-signer, locked position or another pool's position reach the decrease step.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    },
+    {
+      "id": "Q12",
+      "kind": "question",
+      "claim": "No v1 instruction (plain Transfer) can move tokens from a Token-2022 vault.",
+      "covers": [],
+      "status": "open",
+      "owner": "",
+      "tests": [],
+      "argument": "",
+      "tripwire": ""
+    }
+  ]
+}

@@ -7,6 +7,8 @@ mod state;
 mod utils;
 
 #[cfg(test)]
+mod security_gate;
+#[cfg(test)]
 mod test_utils;
 
 pub mod instructions;
