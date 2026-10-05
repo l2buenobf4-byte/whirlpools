@@ -13,7 +13,8 @@ use crate::{
             manager_tick_array_manager::pino_update_tick_array_accounts,
             position::pino_ensure_position_has_enough_rent_for_ticks,
             util_remaining_accounts_utils::{
-                pino_parse_remaining_accounts, PinoParsedRemainingAccounts,
+                pino_parse_remaining_accounts, pino_reject_protected_hook_accounts,
+                PinoParsedRemainingAccounts,
             },
             util_shared::{pino_is_locked_position, pino_verify_position_authority},
             util_token::{
@@ -129,6 +130,15 @@ pub fn handler(accounts: &[AccountInfo], data: &[u8]) -> Result<()> {
             AccountsType::TransferHookDepositB,
             AccountsType::TransferHookWithdrawalA,
             AccountsType::TransferHookWithdrawalB,
+        ],
+    )?;
+    pino_reject_protected_hook_accounts(
+        &remaining_accounts,
+        &[
+            whirlpool_info.key(),
+            token_vault_a_info.key(),
+            token_vault_b_info.key(),
+            position_account_info.key(),
         ],
     )?;
 

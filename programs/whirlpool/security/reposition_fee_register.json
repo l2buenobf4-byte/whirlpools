@@ -408,17 +408,26 @@
     {
       "id": "A14",
       "kind": "assumption",
-      "claim": "CPIs that skip borrow checks are safe while whirlpool and position data are borrowed for writing, and forwarding hook accounts with their transaction-level signer and writable flags gives a hostile hook nothing it can use.",
+      "claim": "A hostile transfer hook can't move or redirect pool funds: Whirlpool never forwards the pool, its vaults or the position in hook account lists, every v2 transfer fails unless the vault balance moved by exactly the expected amount, and calls into other programs that skip borrow checks are safe while whirlpool and position data are borrowed for writing.",
       "covers": [
         "programs/whirlpool/src/pinocchio/cpi/token_transfer_checked.rs::invoke_signed",
         "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_transfer_from_owner_to_vault_v2",
         "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_transfer_from_vault_to_owner_v2",
         "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_is_transfer_hook_enabled",
-        "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_is_transfer_memo_required"
+        "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_is_transfer_memo_required",
+        "programs/whirlpool/src/pinocchio/ported/util_remaining_accounts_utils.rs::pino_reject_protected_hook_accounts",
+        "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_token_account_amount",
+        "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_verify_vault_amount",
+        "programs/whirlpool/src/pinocchio/ported/util_token.rs::pino_expected_vault_amount"
       ],
-      "status": "open",
+      "status": "partial",
       "owner": "",
-      "tests": [],
+      "tests": [
+        "programs/whirlpool/src/pinocchio/ported/util_remaining_accounts_utils.rs::rejects_any_protected_account_in_any_hook_list",
+        "programs/whirlpool/src/pinocchio/ported/util_remaining_accounts_utils.rs::allows_hook_lists_without_protected_accounts",
+        "programs/whirlpool/src/pinocchio/ported/util_token.rs::expected_vault_amount_is_exact",
+        "programs/whirlpool/src/pinocchio/ported/util_token.rs::vault_check_reads_the_live_balance"
+      ],
       "argument": "",
       "tripwire": ""
     },

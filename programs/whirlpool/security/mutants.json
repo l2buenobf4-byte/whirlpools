@@ -99,6 +99,30 @@
       "find": "    if position_existing_range_liquidity == 0 {",
       "replace": "    if position_existing_range_liquidity == 0 || true {",
       "harness": "litesvm"
+    },
+    {
+      "id": "M13",
+      "bug": "Hook account lists are no longer checked for the pool, vaults or position.",
+      "file": "programs/whirlpool/src/pinocchio/ported/util_remaining_accounts_utils.rs",
+      "find": "            if protected.iter().any(|key| pubkey_eq(account.key(), key)) {",
+      "replace": "            if false && protected.iter().any(|key| pubkey_eq(account.key(), key)) {",
+      "harness": "host"
+    },
+    {
+      "id": "M14",
+      "bug": "The vault balance check accepts any balance after a transfer.",
+      "file": "programs/whirlpool/src/pinocchio/ported/util_token.rs",
+      "find": "    if pino_expected_vault_amount(amount_before, change) != Some(amount_after) {",
+      "replace": "    if false && pino_expected_vault_amount(amount_before, change) != Some(amount_after) {",
+      "harness": "host"
+    },
+    {
+      "id": "M15",
+      "bug": "The balance check after a deposit is skipped, so a deposit that arrives short (hostile hook or token program change) goes unnoticed. Only a hostile-hook test on LiteSVM can catch this.",
+      "file": "programs/whirlpool/src/pinocchio/ported/util_token.rs",
+      "find": "    pino_verify_vault_amount(\n        token_vault_info,\n        vault_amount_before,\n        VaultChange::Increase(vault_amount_received),\n    )",
+      "replace": "    let _ = (vault_amount_before, vault_amount_received);\n    Ok(())",
+      "harness": "litesvm"
     }
   ]
 }

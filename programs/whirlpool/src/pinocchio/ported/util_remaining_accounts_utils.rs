@@ -2,6 +2,7 @@ use crate::pinocchio::errors::WhirlpoolErrorCode;
 use crate::pinocchio::Result;
 use crate::util::{AccountsType, RemainingAccountsInfo, MAX_SUPPLEMENTAL_TICK_ARRAYS_LEN};
 use pinocchio::account_info::AccountInfo;
+use pinocchio::pubkey::{pubkey_eq, Pubkey};
 
 #[derive(Default)]
 pub struct PinoParsedRemainingAccounts<'a> {
@@ -161,4 +162,94 @@ pub fn pino_parse_remaining_accounts<'a>(
     }
 
     Ok(parsed_remaining_accounts)
+}
+
+/// Reject transfer-hook account lists that include any protected account (the pool, its
+/// vaults, the position).
+///
+/// A hook has no legitimate need for these: the transfer's own source, destination and
+/// authority are already passed to it by Token-2022. Keeping them out means a hook can't be
+/// handed access to them by Whirlpool, whatever Token-2022 later does with account privileges
+/// (see `security/reposition_fee_register.json`, A14).
+pub fn pino_reject_protected_hook_accounts(
+    remaining_accounts: &PinoParsedRemainingAccounts,
+    protected: &[&Pubkey],
+) -> Result<()> {
+    let hook_account_lists = [
+        &remaining_accounts.transfer_hook_a,
+        &remaining_accounts.transfer_hook_b,
+        &remaining_accounts.transfer_hook_reward,
+        &remaining_accounts.transfer_hook_input,
+        &remaining_accounts.transfer_hook_intermediate,
+        &remaining_accounts.transfer_hook_output,
+        &remaining_accounts.transfer_hook_deposit_a,
+        &remaining_accounts.transfer_hook_deposit_b,
+        &remaining_accounts.transfer_hook_withdrawal_a,
+        &remaining_accounts.transfer_hook_withdrawal_b,
+    ];
+    for accounts in hook_account_lists.into_iter().flatten() {
+        for account in accounts {
+            if protected.iter().any(|key| pubkey_eq(account.key(), key)) {
+                return Err(WhirlpoolErrorCode::RemainingAccountsInvalidSlice.into());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod protected_hook_accounts_tests {
+    use super::*;
+    use crate::pinocchio::test_utils::{expect_err_code, whirlpool_error_code, RawAccount};
+
+    #[test]
+    fn rejects_any_protected_account_in_any_hook_list() {
+        let (pool, vault_a, vault_b, position) = ([1u8; 32], [2u8; 32], [3u8; 32], [4u8; 32]);
+        let protected = [&pool, &vault_a, &vault_b, &position];
+        let mut counter = RawAccount::new([9u8; 32], [0u8; 8]).with_key([7u8; 32]);
+        let counter_info = counter.account_info();
+
+        for key in [pool, vault_a, vault_b, position] {
+            let mut sneaky = RawAccount::new([9u8; 32], [0u8; 8]).with_key(key);
+            let sneaky_info = sneaky.account_info();
+            for slot in 0..10 {
+                let mut parsed = PinoParsedRemainingAccounts::default();
+                let list = Some(vec![&counter_info, &sneaky_info]);
+                match slot {
+                    0 => parsed.transfer_hook_a = list,
+                    1 => parsed.transfer_hook_b = list,
+                    2 => parsed.transfer_hook_reward = list,
+                    3 => parsed.transfer_hook_input = list,
+                    4 => parsed.transfer_hook_intermediate = list,
+                    5 => parsed.transfer_hook_output = list,
+                    6 => parsed.transfer_hook_deposit_a = list,
+                    7 => parsed.transfer_hook_deposit_b = list,
+                    8 => parsed.transfer_hook_withdrawal_a = list,
+                    _ => parsed.transfer_hook_withdrawal_b = list,
+                }
+                assert_eq!(
+                    expect_err_code(pino_reject_protected_hook_accounts(&parsed, &protected)),
+                    whirlpool_error_code(WhirlpoolErrorCode::RemainingAccountsInvalidSlice)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn allows_hook_lists_without_protected_accounts() {
+        let protected = [&[1u8; 32], &[2u8; 32], &[3u8; 32], &[4u8; 32]];
+        let mut counter = RawAccount::new([9u8; 32], [0u8; 8]).with_key([7u8; 32]);
+        let counter_info = counter.account_info();
+        let parsed = PinoParsedRemainingAccounts {
+            transfer_hook_deposit_a: Some(vec![&counter_info]),
+            transfer_hook_withdrawal_b: Some(vec![&counter_info]),
+            ..Default::default()
+        };
+        assert!(pino_reject_protected_hook_accounts(&parsed, &protected).is_ok());
+        assert!(pino_reject_protected_hook_accounts(
+            &PinoParsedRemainingAccounts::default(),
+            &protected
+        )
+        .is_ok());
+    }
 }

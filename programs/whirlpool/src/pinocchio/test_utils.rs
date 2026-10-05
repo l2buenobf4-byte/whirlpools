@@ -247,6 +247,11 @@ impl<const N: usize> RawAccount<N> {
         })
     }
 
+    pub fn with_key(mut self: Box<Self>, key: pinocchio::pubkey::Pubkey) -> Box<Self> {
+        self.key = key;
+        self
+    }
+
     /// The returned AccountInfo must not outlive `self`.
     pub fn account_info(&mut self) -> pinocchio::account_info::AccountInfo {
         let mut slot = core::mem::MaybeUninit::<pinocchio::account_info::AccountInfo>::uninit();

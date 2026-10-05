@@ -5,7 +5,7 @@ use crate::pinocchio::{
         token_transfer::Transfer,
         token_transfer_checked::{TransferChecked, TransferCheckedWithHook},
     },
-    errors::WhirlpoolErrorCode,
+    errors::{AnchorErrorCode, WhirlpoolErrorCode},
     state::{
         token::{
             extensions::{parse_token_extensions, TokenExtensions},
@@ -152,7 +152,8 @@ pub fn pino_transfer_from_owner_to_vault_v2(
     let token_mint_extensions = parse_token_extensions(token_mint.extensions_tlv_data())?;
 
     // TransferFee extension
-    if let Some(epoch_transfer_fee) = pino_get_epoch_transfer_fee(&token_mint_extensions)? {
+    let epoch_transfer_fee = pino_get_epoch_transfer_fee(&token_mint_extensions)?;
+    if let Some(epoch_transfer_fee) = &epoch_transfer_fee {
         // log applied transfer fee
         // - Not must, but important for ease of investigation and replay when problems occur
         // - Use Memo because logs risk being truncated
@@ -167,6 +168,13 @@ pub fn pino_transfer_from_owner_to_vault_v2(
         }
         .invoke_signed(&[])?;
     }
+    let transfer_fee = match &epoch_transfer_fee {
+        Some(epoch_transfer_fee) => epoch_transfer_fee
+            .calculate_fee(amount)
+            .ok_or(WhirlpoolErrorCode::TransferFeeCalculationError)?,
+        None => 0,
+    };
+    let vault_amount_before = pino_token_account_amount(token_vault_info)?;
 
     // MemoTransfer extension
     // The vault doesn't have MemoTransfer extension, so we don't need to use memo_program here
@@ -201,7 +209,16 @@ pub fn pino_transfer_from_owner_to_vault_v2(
         .invoke_signed(&[])?;
     }
 
-    Ok(())
+    // The vault must have received exactly the amount minus the transfer fee, whatever a
+    // transfer hook or the token program did during the transfer.
+    let vault_amount_received = amount
+        .checked_sub(transfer_fee)
+        .ok_or(WhirlpoolErrorCode::TransferFeeCalculationError)?;
+    pino_verify_vault_amount(
+        token_vault_info,
+        vault_amount_before,
+        VaultChange::Increase(vault_amount_received),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -239,6 +256,8 @@ pub fn pino_transfer_from_vault_to_owner_v2(
         }
         .invoke_signed(&[])?;
     }
+
+    let vault_amount_before = pino_token_account_amount(token_vault_info)?;
 
     // MemoTransfer extension
     let token_owner_account =
@@ -284,7 +303,13 @@ pub fn pino_transfer_from_vault_to_owner_v2(
         .invoke_signed(&[whirlpool.seeds().as_ref().into()])?;
     }
 
-    Ok(())
+    // The vault must have sent exactly `amount`, whatever a transfer hook or the token
+    // program did during the transfer.
+    pino_verify_vault_amount(
+        token_vault_info,
+        vault_amount_before,
+        VaultChange::Decrease(amount),
+    )
 }
 
 fn pino_is_transfer_hook_enabled(token_extensions: &TokenExtensions) -> bool {
@@ -336,4 +361,83 @@ pub fn pino_transfer_from_vault_to_owner(
     }
     .invoke_signed(&[whirlpool.seeds().as_ref().into()])?;
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VaultChange {
+    Increase(u64),
+    Decrease(u64),
+}
+
+fn pino_token_account_amount(token_account_info: &AccountInfo) -> Result<u64> {
+    Ok(load_token_program_account::<MemoryMappedTokenAccount>(token_account_info)?.amount())
+}
+
+/// Fail unless the vault balance moved by exactly the expected amount during a transfer.
+fn pino_verify_vault_amount(
+    token_vault_info: &AccountInfo,
+    amount_before: u64,
+    change: VaultChange,
+) -> Result<()> {
+    let amount_after = pino_token_account_amount(token_vault_info)?;
+    if pino_expected_vault_amount(amount_before, change) != Some(amount_after) {
+        return Err(AnchorErrorCode::ConstraintRaw.into());
+    }
+    Ok(())
+}
+
+fn pino_expected_vault_amount(amount_before: u64, change: VaultChange) -> Option<u64> {
+    match change {
+        VaultChange::Increase(amount) => amount_before.checked_add(amount),
+        VaultChange::Decrease(amount) => amount_before.checked_sub(amount),
+    }
+}
+
+#[cfg(test)]
+mod vault_amount_tests {
+    use super::*;
+
+    #[test]
+    fn expected_vault_amount_is_exact() {
+        assert_eq!(
+            pino_expected_vault_amount(100, VaultChange::Increase(5)),
+            Some(105)
+        );
+        assert_eq!(
+            pino_expected_vault_amount(100, VaultChange::Decrease(5)),
+            Some(95)
+        );
+        assert_eq!(
+            pino_expected_vault_amount(100, VaultChange::Increase(0)),
+            Some(100)
+        );
+        assert_eq!(
+            pino_expected_vault_amount(5, VaultChange::Decrease(6)),
+            None
+        );
+        assert_eq!(
+            pino_expected_vault_amount(u64::MAX, VaultChange::Increase(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn vault_check_reads_the_live_balance() {
+        let mut data = [0u8; 165];
+        data[64..72].copy_from_slice(&1_000u64.to_le_bytes()); // amount
+        data[108] = 1; // initialized
+        let mut vault = crate::pinocchio::test_utils::RawAccount::new(
+            crate::pinocchio::constants::address::TOKEN_PROGRAM_ID,
+            data,
+        );
+        let vault_info = vault.account_info();
+
+        // matches: 1_100 before, 100 sent out
+        assert!(pino_verify_vault_amount(&vault_info, 1_100, VaultChange::Decrease(100)).is_ok());
+        // a hook or token program that moved one extra unit out must be caught
+        assert!(pino_verify_vault_amount(&vault_info, 1_101, VaultChange::Decrease(100)).is_err());
+        // a deposit that arrived short must be caught
+        assert!(pino_verify_vault_amount(&vault_info, 900, VaultChange::Increase(101)).is_err());
+        assert!(pino_verify_vault_amount(&vault_info, 900, VaultChange::Increase(100)).is_ok());
+    }
 }

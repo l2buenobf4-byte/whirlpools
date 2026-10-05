@@ -7,7 +7,9 @@ use crate::pinocchio::{
             pino_sync_modify_liquidity_values,
         },
         manager_tick_array_manager::pino_update_tick_array_accounts,
-        util_remaining_accounts_utils::pino_parse_remaining_accounts,
+        util_remaining_accounts_utils::{
+            pino_parse_remaining_accounts, pino_reject_protected_hook_accounts,
+        },
         util_shared::{pino_is_locked_position, pino_verify_position_authority},
         util_token::{
             pino_calculate_transfer_fee_excluded_amount, pino_transfer_from_vault_to_owner_v2,
@@ -111,6 +113,15 @@ pub fn handler(accounts: &[AccountInfo], data: &[u8]) -> Result<()> {
         remaining_accounts,
         &data.remaining_accounts_info,
         &[AccountsType::TransferHookA, AccountsType::TransferHookB],
+    )?;
+    pino_reject_protected_hook_accounts(
+        &remaining_accounts,
+        &[
+            whirlpool_info.key(),
+            token_vault_a_info.key(),
+            token_vault_b_info.key(),
+            position_info.key(),
+        ],
     )?;
 
     let liquidity_delta = convert_to_liquidity_delta(data.liquidity_amount, false)?;

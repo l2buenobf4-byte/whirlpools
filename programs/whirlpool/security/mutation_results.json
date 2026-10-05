@@ -1,10 +1,13 @@
 {
-  "fingerprint": "4ec8cde3b10c77aa",
+  "fingerprint": "f77bdfa19f753fc1",
   "results": {
     "M1": "killed",
     "M10": "not_run",
     "M11": "not_run",
     "M12": "not_run",
+    "M13": "killed",
+    "M14": "killed",
+    "M15": "not_run",
     "M2": "killed",
     "M3": "killed",
     "M4": "killed",
