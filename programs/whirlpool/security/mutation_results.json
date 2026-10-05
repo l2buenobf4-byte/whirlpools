@@ -1,5 +1,5 @@
 {
-  "fingerprint": "f77bdfa19f753fc1",
+  "fingerprint": "f0e94dff9d091d6a",
   "results": {
     "M1": "killed",
     "M10": "not_run",
@@ -8,6 +8,7 @@
     "M13": "killed",
     "M14": "killed",
     "M15": "not_run",
+    "M16": "killed",
     "M2": "killed",
     "M3": "killed",
     "M4": "killed",

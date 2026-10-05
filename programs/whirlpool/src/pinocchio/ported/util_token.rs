@@ -21,7 +21,10 @@ use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::{
     TransferFee, MAX_FEE_BASIS_POINTS,
 };
 use pinocchio::sysvars::{clock::Clock, Sysvar};
-use pinocchio::{account_info::AccountInfo, pubkey::pubkey_eq};
+use pinocchio::{
+    account_info::AccountInfo,
+    pubkey::{pubkey_eq, Pubkey},
+};
 
 pub fn pino_calculate_transfer_fee_excluded_amount(
     token_mint_info: &AccountInfo,
@@ -174,7 +177,7 @@ pub fn pino_transfer_from_owner_to_vault_v2(
             .ok_or(WhirlpoolErrorCode::TransferFeeCalculationError)?,
         None => 0,
     };
-    let vault_amount_before = pino_token_account_amount(token_vault_info)?;
+    let vault_before = pino_vault_snapshot(token_vault_info)?;
 
     // MemoTransfer extension
     // The vault doesn't have MemoTransfer extension, so we don't need to use memo_program here
@@ -209,14 +212,15 @@ pub fn pino_transfer_from_owner_to_vault_v2(
         .invoke_signed(&[])?;
     }
 
-    // The vault must have received exactly the amount minus the transfer fee, whatever a
-    // transfer hook or the token program did during the transfer.
+    // The vault must have received exactly the amount minus the transfer fee, and its owner,
+    // delegate and close authority must be unchanged, whatever a transfer hook or the token
+    // program did during the transfer.
     let vault_amount_received = amount
         .checked_sub(transfer_fee)
         .ok_or(WhirlpoolErrorCode::TransferFeeCalculationError)?;
-    pino_verify_vault_amount(
+    pino_verify_vault_after_transfer(
         token_vault_info,
-        vault_amount_before,
+        &vault_before,
         VaultChange::Increase(vault_amount_received),
     )
 }
@@ -257,7 +261,7 @@ pub fn pino_transfer_from_vault_to_owner_v2(
         .invoke_signed(&[])?;
     }
 
-    let vault_amount_before = pino_token_account_amount(token_vault_info)?;
+    let vault_before = pino_vault_snapshot(token_vault_info)?;
 
     // MemoTransfer extension
     let token_owner_account =
@@ -303,11 +307,11 @@ pub fn pino_transfer_from_vault_to_owner_v2(
         .invoke_signed(&[whirlpool.seeds().as_ref().into()])?;
     }
 
-    // The vault must have sent exactly `amount`, whatever a transfer hook or the token
-    // program did during the transfer.
-    pino_verify_vault_amount(
+    // The vault must have sent exactly `amount`, and its owner, delegate and close authority
+    // must be unchanged, whatever a transfer hook or the token program did during the transfer.
+    pino_verify_vault_after_transfer(
         token_vault_info,
-        vault_amount_before,
+        &vault_before,
         VaultChange::Decrease(amount),
     )
 }
@@ -369,18 +373,41 @@ enum VaultChange {
     Decrease(u64),
 }
 
-fn pino_token_account_amount(token_account_info: &AccountInfo) -> Result<u64> {
-    Ok(load_token_program_account::<MemoryMappedTokenAccount>(token_account_info)?.amount())
+/// The parts of a vault token account that a transfer must never change, plus its balance.
+#[derive(Debug, PartialEq, Eq)]
+struct VaultSnapshot {
+    amount: u64,
+    owner: Pubkey,
+    delegate: Option<Pubkey>,
+    close_authority: Option<Pubkey>,
 }
 
-/// Fail unless the vault balance moved by exactly the expected amount during a transfer.
-fn pino_verify_vault_amount(
+fn pino_vault_snapshot(token_vault_info: &AccountInfo) -> Result<VaultSnapshot> {
+    let vault = load_token_program_account::<MemoryMappedTokenAccount>(token_vault_info)?;
+    Ok(VaultSnapshot {
+        amount: vault.amount(),
+        owner: *vault.owner(),
+        delegate: vault.delegate().copied(),
+        close_authority: vault.close_authority().copied(),
+    })
+}
+
+/// Fail unless the vault balance moved by exactly the expected amount and nothing that
+/// controls the vault (owner, delegate, close authority) changed during the transfer.
+fn pino_verify_vault_after_transfer(
     token_vault_info: &AccountInfo,
-    amount_before: u64,
+    before: &VaultSnapshot,
     change: VaultChange,
 ) -> Result<()> {
-    let amount_after = pino_token_account_amount(token_vault_info)?;
-    if pino_expected_vault_amount(amount_before, change) != Some(amount_after) {
+    let after = pino_vault_snapshot(token_vault_info)?;
+    let expected = VaultSnapshot {
+        amount: pino_expected_vault_amount(before.amount, change)
+            .ok_or(AnchorErrorCode::ConstraintRaw)?,
+        owner: before.owner,
+        delegate: before.delegate,
+        close_authority: before.close_authority,
+    };
+    if after != expected {
         return Err(AnchorErrorCode::ConstraintRaw.into());
     }
     Ok(())
@@ -421,23 +448,92 @@ mod vault_amount_tests {
         );
     }
 
+    fn vault_data(
+        amount: u64,
+        owner: [u8; 32],
+        delegate: Option<[u8; 32]>,
+        close: Option<[u8; 32]>,
+    ) -> [u8; 165] {
+        let mut data = [0u8; 165];
+        data[32..64].copy_from_slice(&owner);
+        data[64..72].copy_from_slice(&amount.to_le_bytes());
+        if let Some(delegate) = delegate {
+            data[72] = 1;
+            data[76..108].copy_from_slice(&delegate);
+        }
+        data[108] = 1; // initialized
+        if let Some(close) = close {
+            data[129] = 1;
+            data[133..165].copy_from_slice(&close);
+        }
+        data
+    }
+
+    fn check(before: [u8; 165], after: [u8; 165], change: VaultChange) -> bool {
+        use crate::pinocchio::{constants::address::TOKEN_PROGRAM_ID, test_utils::RawAccount};
+        let mut before_account = RawAccount::new(TOKEN_PROGRAM_ID, before);
+        let snapshot = pino_vault_snapshot(&before_account.account_info())
+            .ok()
+            .unwrap();
+        let mut after_account = RawAccount::new(TOKEN_PROGRAM_ID, after);
+        pino_verify_vault_after_transfer(&after_account.account_info(), &snapshot, change).is_ok()
+    }
+
     #[test]
     fn vault_check_reads_the_live_balance() {
-        let mut data = [0u8; 165];
-        data[64..72].copy_from_slice(&1_000u64.to_le_bytes()); // amount
-        data[108] = 1; // initialized
-        let mut vault = crate::pinocchio::test_utils::RawAccount::new(
-            crate::pinocchio::constants::address::TOKEN_PROGRAM_ID,
-            data,
-        );
-        let vault_info = vault.account_info();
-
-        // matches: 1_100 before, 100 sent out
-        assert!(pino_verify_vault_amount(&vault_info, 1_100, VaultChange::Decrease(100)).is_ok());
+        let pool = [1u8; 32];
+        let before = vault_data(1_100, pool, None, None);
+        assert!(check(
+            before,
+            vault_data(1_000, pool, None, None),
+            VaultChange::Decrease(100)
+        ));
         // a hook or token program that moved one extra unit out must be caught
-        assert!(pino_verify_vault_amount(&vault_info, 1_101, VaultChange::Decrease(100)).is_err());
+        assert!(!check(
+            before,
+            vault_data(999, pool, None, None),
+            VaultChange::Decrease(100)
+        ));
         // a deposit that arrived short must be caught
-        assert!(pino_verify_vault_amount(&vault_info, 900, VaultChange::Increase(101)).is_err());
-        assert!(pino_verify_vault_amount(&vault_info, 900, VaultChange::Increase(100)).is_ok());
+        assert!(!check(
+            before,
+            vault_data(1_199, pool, None, None),
+            VaultChange::Increase(100)
+        ));
+        assert!(check(
+            before,
+            vault_data(1_200, pool, None, None),
+            VaultChange::Increase(100)
+        ));
+    }
+
+    #[test]
+    fn vault_check_catches_authority_changes_with_correct_balance() {
+        let (pool, attacker) = ([1u8; 32], [9u8; 32]);
+        let before = vault_data(1_100, pool, None, None);
+        let ok_after = |owner, delegate, close| vault_data(1_000, owner, delegate, close);
+        assert!(check(
+            before,
+            ok_after(pool, None, None),
+            VaultChange::Decrease(100)
+        ));
+        // owner changed (SetAuthority AccountOwner)
+        assert!(!check(
+            before,
+            ok_after(attacker, None, None),
+            VaultChange::Decrease(100)
+        ));
+        // delegate added (Approve)
+        assert!(!check(
+            before,
+            ok_after(pool, Some(attacker), None),
+            VaultChange::Decrease(100)
+        ));
+        // close authority set (SetAuthority CloseAccount)
+        assert!(!check(
+            before,
+            ok_after(pool, None, Some(attacker)),
+            VaultChange::Decrease(100)
+        ));
     }
 }

@@ -110,19 +110,27 @@
     },
     {
       "id": "M14",
-      "bug": "The vault balance check accepts any balance after a transfer.",
+      "bug": "The vault check accepts any balance after a transfer.",
       "file": "programs/whirlpool/src/pinocchio/ported/util_token.rs",
-      "find": "    if pino_expected_vault_amount(amount_before, change) != Some(amount_after) {",
-      "replace": "    if false && pino_expected_vault_amount(amount_before, change) != Some(amount_after) {",
+      "find": "        amount: pino_expected_vault_amount(before.amount, change)",
+      "replace": "        amount: after.amount + 0 * pino_expected_vault_amount(before.amount, change).unwrap_or(0)",
       "harness": "host"
     },
     {
       "id": "M15",
       "bug": "The balance check after a deposit is skipped, so a deposit that arrives short (hostile hook or token program change) goes unnoticed. Only a hostile-hook test on LiteSVM can catch this.",
       "file": "programs/whirlpool/src/pinocchio/ported/util_token.rs",
-      "find": "    pino_verify_vault_amount(\n        token_vault_info,\n        vault_amount_before,\n        VaultChange::Increase(vault_amount_received),\n    )",
-      "replace": "    let _ = (vault_amount_before, vault_amount_received);\n    Ok(())",
+      "find": "    pino_verify_vault_after_transfer(\n        token_vault_info,\n        &vault_before,\n        VaultChange::Increase(vault_amount_received),\n    )",
+      "replace": "    let _ = (vault_before, vault_amount_received);\n    Ok(())",
       "harness": "litesvm"
+    },
+    {
+      "id": "M16",
+      "bug": "The vault check ignores owner, delegate and close-authority changes, so a hook that re-assigns the vault without moving tokens goes unnoticed.",
+      "file": "programs/whirlpool/src/pinocchio/ported/util_token.rs",
+      "find": "        owner: before.owner,\n        delegate: before.delegate,\n        close_authority: before.close_authority,",
+      "replace": "        owner: after.owner,\n        delegate: after.delegate,\n        close_authority: after.close_authority,",
+      "harness": "host"
     }
   ]
 }

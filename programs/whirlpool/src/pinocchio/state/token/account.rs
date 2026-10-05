@@ -54,6 +54,15 @@ impl MemoryMappedTokenAccount {
     }
 
     #[inline(always)]
+    pub fn close_authority(&self) -> Option<&Pubkey> {
+        if self.close_authority.0[0] == 1 {
+            Some(&self.close_authority.1)
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
     pub fn is_frozen(&self) -> bool {
         self.state == AccountState::Frozen as u8
     }

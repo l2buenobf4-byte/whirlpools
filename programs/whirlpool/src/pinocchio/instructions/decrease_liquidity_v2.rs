@@ -121,6 +121,7 @@ pub fn handler(accounts: &[AccountInfo], data: &[u8]) -> Result<()> {
             token_vault_a_info.key(),
             token_vault_b_info.key(),
             position_info.key(),
+            position_token_account_info.key(),
         ],
     )?;
 
